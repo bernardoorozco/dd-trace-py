@@ -1,4 +1,3 @@
-import celery
 from celery import registry
 from celery.utils import nodenames
 
