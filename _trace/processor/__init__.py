@@ -131,60 +131,63 @@ class TraceSamplingProcessor(TraceProcessor):
         self.apm_opt_out = apm_opt_out
 
     def process_trace(self, trace: List[Span]) -> Optional[List[Span]]:
-        print("Entering process_trace")
+        log.info("Entering process_trace")
         if trace:
-            print("Trace is not empty")
+            log.info("Trace is not empty")
             chunk_root = trace[0]
             root_ctx = chunk_root._context
-            print(f"Chunk root: {chunk_root}, Root context: {root_ctx}")
+            log.info(f"Chunk root: {chunk_root}, Root context: {root_ctx}")
 
             if self.apm_opt_out:
-                print("APM opt-out is enabled")
+                log.info("APM opt-out is enabled")
                 chunk_root.set_metric(MK_APM_ENABLED, 0)
 
             # only trace sample if we haven't already sampled
             if root_ctx and root_ctx.sampling_priority is None:
-                print("Sampling trace before", root_ctx.sampling_priority)
+                log.info("Sampling trace before", root_ctx.sampling_priority)
                 self.sampler.sample(trace[0])
-                print("Sampling trace after", root_ctx.sampling_priority)
+                log.info("Sampling trace after", root_ctx.sampling_priority)
             # When stats computation is enabled in the tracer then we can
             # safely drop the traces.
             if self._compute_stats_enabled and not self.apm_opt_out:
-                print("Stats computation is enabled and APM opt-out is not enabled")
+                log.info("Stats computation is enabled and APM opt-out is not enabled")
                 priority = root_ctx.sampling_priority if root_ctx is not None else None
-                print(f"Priority: {priority}")
+                log.info(f"Priority: {priority}")
                 if priority is not None and priority <= 0:
-                    print("Priority is less than or equal to 0")
+                    log.info("Priority is less than or equal to 0")
                     # When any span is marked as keep by a single span sampling
                     # decision then we still send all and only those spans.
                     single_spans = [_ for _ in trace if is_single_span_sampled(_)]
-                    print(f"Single spans: {single_spans}")
+                    log.info(f"Single spans: {single_spans}")
 
                     return single_spans or None
 
-            print("No single spans", self.single_span_rules)
+            log.info("No single spans", self.single_span_rules)
             # single span sampling rules are applied after trace sampling
             if self.single_span_rules:
-                print("Applying single span sampling rules")
+                log.info("Applying single span sampling rules")
                 for span in trace:
-                    print(f"Processing span: {span}")
-                    if span.context.sampling_priority is not None and span.context.sampling_priority <= 0:
-                        print(f"Span {span} has sampling priority <= 0")
+                    log.info(f"Processing span: {span}")
+                    if (
+                        span.context.sampling_priority is not None
+                        and span.context.sampling_priority <= 0
+                    ):
+                        log.info(f"Span {span} has sampling priority <= 0")
                         for rule in self.single_span_rules:
-                            print(f"Checking rule: {rule}")
+                            log.info(f"Checking rule: {rule}")
                             if rule.match(span):
-                                print(f"Rule {rule} matched span {span}")
+                                log.info(f"Rule {rule} matched span {span}")
                                 rule.sample(span)
                                 # If stats computation is enabled, we won't send all spans to the agent.
                                 # In order to ensure that the agent does not update priority sampling rates
                                 # due to single spans sampling, we set all of these spans to manual keep.
                                 if config._trace_compute_stats:
-                                    print("Setting manual keep for span")
+                                    log.info("Setting manual keep for span")
                                     span.set_metric(SAMPLING_PRIORITY_KEY, USER_KEEP)
                                 break
-            print("PROCESS TRACE", trace)
+            log.info("PROCESS TRACE", trace)
             return trace
-        print("NO TRACE")
+        log.info("NO TRACE")
         return None
 
 
@@ -273,7 +276,9 @@ class SpanAggregator(SpanProcessor):
         self._writer = writer
 
         self._traces: DefaultDict[int, _Trace] = defaultdict(lambda: _Trace())
-        self._lock: Union[RLock, Lock] = RLock() if config._span_aggregator_rlock else Lock()
+        self._lock: Union[RLock, Lock] = (
+            RLock() if config._span_aggregator_rlock else Lock()
+        )
 
         # Tracks the number of spans created and tags each count with the api that was used
         # ex: otel api, opentracing api, datadog api
@@ -300,29 +305,32 @@ class SpanAggregator(SpanProcessor):
             self._queue_span_count_metrics("spans_created", "integration_name")
 
     def on_span_finish(self, span: Span) -> None:
-        print(f"Entering on_span_finish with span: {span}")
+        log.info(f"Entering on_span_finish with span: {span}")
         with self._lock:
-            print(f"Acquired lock for span: {span}")
+            log.info(f"Acquired lock for span: {span}")
             self._span_metrics["spans_finished"][span._span_api] += 1
-            print(f"Updated spans_finished metric for API: {span._span_api}")
+            log.info(f"Updated spans_finished metric for API: {span._span_api}")
 
             if span.trace_id not in self._traces:
                 log_msg = "finished span not connected to a trace"
                 telemetry.telemetry_writer.add_log(TELEMETRY_LOG_LEVEL.ERROR, log_msg)
                 log.debug("%s: %s", log_msg, span)
-                print(f"{log_msg}: {span}")
+                log.info(f"{log_msg}: {span}")
                 return
 
             trace = self._traces[span.trace_id]
             trace.num_finished += 1
-            print(f"Trace {span.trace_id} num_finished: {trace.num_finished}")
-            should_partial_flush = self._partial_flush_enabled and trace.num_finished >= self._partial_flush_min_spans
-            print(f"Should partial flush: {should_partial_flush}")
+            log.info(f"Trace {span.trace_id} num_finished: {trace.num_finished}")
+            should_partial_flush = (
+                self._partial_flush_enabled
+                and trace.num_finished >= self._partial_flush_min_spans
+            )
+            log.info(f"Should partial flush: {should_partial_flush}")
 
             if trace.num_finished == len(trace.spans) or should_partial_flush:
                 trace_spans = trace.spans
                 trace.spans = []
-                print(f"Trace spans: {trace_spans}")
+                log.info(f"Trace spans: {trace_spans}")
                 if trace.num_finished < len(trace_spans):
                     finished = []
                     for s in trace_spans:
@@ -330,53 +338,70 @@ class SpanAggregator(SpanProcessor):
                             finished.append(s)
                         else:
                             trace.spans.append(s)
-                    print(f"Finished spans: {finished}")
+                    log.info(f"Finished spans: {finished}")
                 else:
                     finished = trace_spans
 
                 num_finished = len(finished)
                 trace.num_finished -= num_finished
-                print(f"Num finished: {num_finished}, trace.num_finished: {trace.num_finished}")
+                log.info(
+                    f"Num finished: {num_finished}, trace.num_finished: {trace.num_finished}"
+                )
                 if trace.num_finished != 0:
                     log_msg = "unexpected finished span count"
-                    telemetry.telemetry_writer.add_log(TELEMETRY_LOG_LEVEL.ERROR, log_msg)
+                    telemetry.telemetry_writer.add_log(
+                        TELEMETRY_LOG_LEVEL.ERROR, log_msg
+                    )
                     log.debug("%s (%s) for span %s", log_msg, num_finished, span)
-                    print(f"{log_msg} ({num_finished}) for span {span}")
+                    log.info(f"{log_msg} ({num_finished}) for span {span}")
                     trace.num_finished = 0
 
                 if len(trace.spans) == 0:
                     del self._traces[span.trace_id]
-                    print(f"Deleted trace {span.trace_id} from traces")
+                    log.info(f"Deleted trace {span.trace_id} from traces")
 
                 if not finished:
-                    print("No finished spans to process")
+                    log.info("No finished spans to process")
                     return
 
                 if should_partial_flush:
-                    log.debug("Partially flushing %d spans for trace %d", num_finished, span.trace_id)
-                    print(f"Partially flushing {num_finished} spans for trace {span.trace_id}")
+                    log.debug(
+                        "Partially flushing %d spans for trace %d",
+                        num_finished,
+                        span.trace_id,
+                    )
+                    log.info(
+                        f"Partially flushing {num_finished} spans for trace {span.trace_id}"
+                    )
                     finished[0].set_metric("_dd.py.partial_flush", num_finished)
 
                 spans: Optional[List[Span]] = finished
                 for tp in self._trace_processors:
                     try:
                         if spans is None:
-                            print("No spans to process after processor")
+                            log.info("No spans to process after processor")
                             return
                         spans = tp.process_trace(spans)
-                        print(f"Processed spans with {tp}: {spans}")
+                        log.info(f"Processed spans with {tp}: {spans}")
                     except Exception:
                         log.error("error applying processor %r", tp, exc_info=True)
-                        print(f"Error applying processor {tp}")
+                        log.info(f"Error applying processor {tp}")
 
                 self._queue_span_count_metrics("spans_finished", "integration_name")
-                print(f"Queued span count metrics for spans_finished")
+                log.info(f"Queued span count metrics for spans_finished")
                 self._writer.write(spans)
-                print(f"Wrote spans: {spans}")
+                log.info(f"Wrote spans: {spans}")
                 return
 
-            log.debug("trace %d has %d spans, %d finished", span.trace_id, len(trace.spans), trace.num_finished)
-            print(f"Trace {span.trace_id} has {len(trace.spans)} spans, {trace.num_finished} finished")
+            log.debug(
+                "trace %d has %d spans, %d finished",
+                span.trace_id,
+                len(trace.spans),
+                trace.num_finished,
+            )
+            log.info(
+                f"Trace {span.trace_id} has {len(trace.spans)} spans, {trace.num_finished} finished"
+            )
             return None
 
     def shutdown(self, timeout: Optional[float]) -> None:
@@ -403,7 +428,8 @@ class SpanAggregator(SpanProcessor):
         ]
         if unfinished_spans:
             log.warning(
-                "Shutting down tracer with %d unfinished spans. " "Unfinished spans will not be sent to Datadog: %s",
+                "Shutting down tracer with %d unfinished spans. "
+                "Unfinished spans will not be sent to Datadog: %s",
                 len(unfinished_spans),
                 ", ".join(unfinished_spans),
             )
@@ -414,13 +440,21 @@ class SpanAggregator(SpanProcessor):
             # It's possible the writer never got started in the first place :(
             pass
 
-    def _queue_span_count_metrics(self, metric_name: str, tag_name: str, min_count: int = 100) -> None:
+    def _queue_span_count_metrics(
+        self, metric_name: str, tag_name: str, min_count: int = 100
+    ) -> None:
         """Queues a telemetry count metric for span created and span finished"""
         # perf: telemetry_metrics_writer.add_count_metric(...) is an expensive operation.
         # We should avoid calling this method on every invocation of span finish and span start.
-        if config._telemetry_enabled and sum(self._span_metrics[metric_name].values()) >= min_count:
+        if (
+            config._telemetry_enabled
+            and sum(self._span_metrics[metric_name].values()) >= min_count
+        ):
             for tag_value, count in self._span_metrics[metric_name].items():
                 telemetry.telemetry_writer.add_count_metric(
-                    TELEMETRY_NAMESPACE_TAG_TRACER, metric_name, count, tags=((tag_name, tag_value),)
+                    TELEMETRY_NAMESPACE_TAG_TRACER,
+                    metric_name,
+                    count,
+                    tags=((tag_name, tag_value),),
                 )
             self._span_metrics[metric_name] = defaultdict(int)
